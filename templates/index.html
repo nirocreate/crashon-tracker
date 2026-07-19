@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crash-On Analysis - Live Recorder</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0a0e1a; --panel:#121829; --accent:#00d5ff; --red:#ff4d4d; --green:#3ddc84; --text:#e6edf3; --muted:#8b97a8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:16px 20px; border-bottom:1px solid #1e2a44; display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:18px; margin:0; }
+  .status { font-size:13px; color:var(--muted); margin-left:auto; display:flex; gap:14px; align-items:center; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--red); display:inline-block; }
+  .dot.on { background:var(--green); box-shadow:0 0 8px var(--green); }
+  .wrap { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px; }
+  @media(max-width:820px){ .wrap { grid-template-columns:1fr; } }
+  .panel { background:var(--panel); border:1px solid #1e2a44; border-radius:12px; padding:16px; }
+  .panel h2 { font-size:14px; margin:0 0 12px; color:var(--accent); text-transform:uppercase; letter-spacing:1px; }
+  .big { font-size:42px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .phase { font-size:13px; color:var(--muted); margin-top:6px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #1a2238; }
+  th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .crash { color:var(--red); font-weight:700; }
+  .live { color:var(--accent); }
+  .event { font-size:12px; padding:4px 0; border-bottom:1px solid #161e30; color:var(--muted); }
+  .event b { color:var(--text); }
+  .ticks { max-height:340px; overflow:auto; }
+  .full { grid-column:1 / -1; }
+  .rounds-wrap { max-height:520px; overflow:auto; }
+  .cashouts { color:var(--muted); font-size:11px; }
+  .note { color:var(--muted); font-size:11px; margin-top:8px; }
+  .ratios { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+  @media(max-width:820px){ .ratios { grid-template-columns:repeat(2,1fr); } }
+  .rcard { background:#0d1426; border:1px solid #1e2a44; border-radius:10px; padding:14px; }
+  .rlabel { color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .rval { font-size:26px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .rsub { color:var(--muted); font-size:11px; margin-top:4px; }
+  .summary { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--muted); margin-bottom:10px; }
+  .summary b { color:var(--text); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crash-On Analysis</h1>
+  <span style="color:var(--muted);font-size:12px;">Game #42 · gameonworld.ai</span>
+  <div class="status">
+    <span><span id="dot" class="dot"></span> <span id="conn">offline</span></span>
+    <span>db rounds: <b id="dbcount">0</b></span>
+    <span id="uptime"></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <h2>Live Round</h2>
+    <div id="mult" class="big">--</div>
+    <div id="phase" class="phase">waiting for data…</div>
+    <div id="roundId" class="phase"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Recent Multiplier Ticks</h2>
+    <div id="ticks" class="ticks"></div>
+  </div>
+
+  <div class="panel full">
+    <h2>House vs Players &mdash; Per Round (computed locally, server liquidity not trusted)</h2>
+    <div class="summary">
+      <span>Total Bets: <b id="chartBets">0</b></span>
+      <span>Total Won by Players: <b id="chartWon">0</b></span>
+      <span>House Profit (Bets &minus; Won): <b id="chartProfit">0</b></span>
+      <span>Rounds: <b id="chartRounds">0</b></span>
+    </div>
+    <div style="position:relative;height:320px;">
+      <canvas id="chart"></canvas>
+    </div>
+    <div class="note">Chart shows bets / wins / house profit <b>per round</b>. House profit per round = round's Total Bet &minus; round's Amount Won, computed from recorded data, independent of the server's reported liquidity.</div>
+  </div>
+
+  <div class="panel full">
+    <h2>Bet &middot; Win &middot; House-Profit Ratios (live)</h2>
+    <div class="ratios" id="ratios">
+      <div class="rcard"><div class="rlabel">Bets &rarr; Wins (payout %)</div><div class="rval" id="rPayout">0%</div><div class="rsub" id="rPayoutSub">won / bet</div></div>
+      <div class="rcard"><div class="rlabel">House Edge (real)</div><div class="rval" id="rEdge">0%</div><div class="rsub" id="rEdgeSub">profit / bet</div></div>
+      <div class="rcard"><div class="rlabel">Profit per Round</div><div class="rval" id="rPerRound">0</div><div class="rsub" id="rPerRoundSub">house profit / rounds</div></div>
+      <div class="rcard"><div class="rlabel">Win Rate (players)</div><div class="rval" id="rWinRate">0%</div><div class="rsub" id="rWinRateSub">rounds w/ profit&gt;0 / total</div></div>
+    </div>
+  </div>
+
+  <div class="panel full">
+    <h2>Last 20 Rounds (from database)</h2>
+    <div class="summary">
+      <span>Total bet value: <b id="sumBets">0</b></span>
+      <span>Amount won: <b id="sumWon">0</b></span>
+      <span>House profit: <b id="sumProfit">0</b></span>
+    </div>
+    <div class="rounds-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Round ID</th>
+            <th class="num">Crash</th>
+            <th class="num">Total Bet</th>
+            <th class="num"># Bets</th>
+            <th>Cashouts (x)</th>
+            <th class="num">House Edge</th>
+            <th class="num">Liquidity</th>
+            <th class="num">Won by Players</th>
+            <th class="num">House Profit</th>
+            <th>Time</th>
+          </tr>
+        </thead>
+        <tbody id="rounds"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel full">
+    <h2>Raw Event Log</h2>
+    <div id="events"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => Number(n == null ? 0 : n).toFixed(2);
+// Preserve the original liquidity precision (e.g. 468.24999999999875)
+const fmtLiq = n => {
+  const v = Number(n == null ? 0 : n);
+  return (v % 1 === 0) ? v.toFixed(2) : v.toString();
+};
+const ev = new EventSource("/api/stream");
+
+ev.onopen = () => { $("dot").classList.add("on"); $("conn").textContent = "online"; };
+ev.onerror = () => { $("dot").classList.remove("on"); $("conn").textContent = "offline"; };
+
+ev.onmessage = e => {
+  const d = JSON.parse(e.data);
+  $("dot").classList.toggle("on", d.connected);
+  $("conn").textContent = d.connected ? "online" : "offline";
+
+  const ls = d.live_state || {};
+  if (ls.multiplier !== undefined) {
+    const m = $("mult");
+    m.textContent = "x" + fmt(ls.multiplier);
+    m.className = "big " + (ls.phase === "crashed" ? "crash" : "live");
+  }
+  if (ls.phase) $("phase").textContent = "phase: " + ls.phase;
+  if (ls.roundId) $("roundId").textContent = "round: " + ls.roundId;
+
+  const tEl = $("ticks");
+  tEl.innerHTML = (d.ticks || []).slice().reverse().map(t =>
+    `<div class="event"><span class="live">x${fmt(t.multiplier)}</span> · ${t.roundId}</div>`
+  ).join("");
+
+  const evEl = $("events");
+  evEl.innerHTML = (d.recent_events || []).slice().reverse().map(x =>
+    `<div class="event"><b>${x.type}</b> · ${new Date(x.ts).toLocaleTimeString()} ` +
+    `<span>${JSON.stringify(x.payload).slice(0,120)}</span></div>`
+  ).join("");
+};
+
+// Poll the database-backed rounds endpoint.
+async function refreshRounds() {
+  try {
+    const res = await fetch("/api/db/rounds");
+    const rows = await res.json();
+    let sumBets = 0, sumWon = 0, sumProfit = 0;
+    const html = rows.map(r => {
+      const totalBet = Number(r.total_bet_value || 0);
+      const won = Number(r.amount_won || 0);
+      const profit = totalBet - won;   // House Profit = Total Bet - Won by Players
+      sumBets += totalBet;
+      sumWon += won;
+      sumProfit += profit;
+      const cash = (r.cashouts || []).map(c =>
+        `${c.displayName || '?'} x${fmt(c.cashoutMultiplier)}`).join(', ') || '—';
+      const t = r.crashed_at ? new Date(r.crashed_at).toLocaleTimeString() : '';
+      return `<tr>
+        <td>${r.round_id}</td>
+        <td class="num crash">x${fmt(r.crash_point)}</td>
+        <td class="num">${fmtLiq(totalBet)}</td>
+        <td class="num">${r.total_bets}</td>
+        <td class="cashouts">${cash}</td>
+        <td class="num">${r.house_edge != null ? fmt(r.house_edge*100) + '%' : '—'}</td>
+        <td class="num">${fmtLiq(r.available_liquidity)}</td>
+        <td class="num">${fmtLiq(won)}</td>
+        <td class="num">${fmtLiq(profit)}</td>
+        <td>${t}</td>
+      </tr>`;
+    }).join("");
+    $("rounds").innerHTML = html;
+    $("sumBets").textContent = fmtLiq(sumBets);
+    $("sumWon").textContent = fmtLiq(sumWon);
+    $("sumProfit").textContent = fmtLiq(sumProfit);
+    $("dbcount").textContent = rows.length;
+  } catch (_) {}
+}
+refreshRounds();
+setInterval(refreshRounds, 3000);
+setInterval(() => {
+  $("uptime").textContent = "updated " + new Date().toLocaleTimeString();
+}, 1000);
+
+// ---- Live per-round chart (House vs Players) + ratios ----
+let chart;
+async function refreshChart() {
+  try {
+    const res = await fetch("/api/db/aggregates");
+    const a = await res.json();
+    const aggBets = a.agg_bets != null ? a.agg_bets : a.total_bets;
+    const aggWon = a.agg_won != null ? a.agg_won : a.total_won;
+    const aggProfit = a.agg_profit != null ? a.agg_profit : a.house_profit;
+    $("chartBets").textContent = fmtLiq(aggBets);
+    $("chartWon").textContent = fmtLiq(aggWon);
+    $("chartProfit").textContent = fmtLiq(aggProfit);
+    $("chartRounds").textContent = a.rounds;
+
+    const s = a.series || [];
+    const labels = s.map(p => p.round_id.replace("CR-", ""));
+    const bets = s.map(p => p.bets);
+    const won = s.map(p => p.won);
+    const profit = s.map(p => p.profit);
+
+    if (!chart) {
+      const ctx = document.getElementById("chart").getContext("2d");
+      chart = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            { label: "Bets (per round)", data: bets, backgroundColor: "rgba(0,213,255,0.55)", borderColor: "#00d5ff", borderWidth: 1 },
+            { label: "Won by Players (per round)", data: won, backgroundColor: "rgba(61,220,132,0.55)", borderColor: "#3ddc84", borderWidth: 1 },
+            { label: "House Profit (per round)", data: profit, backgroundColor: "rgba(255,77,77,0.55)", borderColor: "#ff4d4d", borderWidth: 1, type: "line", tension: 0.2, pointRadius: 0 },
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: { ticks: { color: "#8b97a8", maxTicksLimit: 12 }, grid: { color: "#1a2238" } },
+            y: { ticks: { color: "#8b97a8" }, grid: { color: "#1a2238" } }
+          },
+          plugins: {
+            legend: { labels: { color: "#e6edf3" } },
+            tooltip: {
+              callbacks: {
+                title: items => "Round CR-" + items[0].label,
+                label: c => c.dataset.label + ": " + Number(c.parsed.y).toFixed(2)
+              }
+            }
+          }
+        }
+      });
+    } else {
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = bets;
+      chart.data.datasets[1].data = won;
+      chart.data.datasets[2].data = profit;
+      chart.update();
+    }
+
+    // ---- Ratios (plain live stats) ----
+    const totalBet = Number(aggBets || 0);
+    const totalWon = Number(aggWon || 0);
+    const totalProfit = Number(aggProfit || 0);
+    const n = Number(a.rounds || 0);
+    const payoutPct = totalBet > 0 ? (totalWon / totalBet) * 100 : 0;
+    const edgePct = totalBet > 0 ? (totalProfit / totalBet) * 100 : 0;
+    const perRound = n > 0 ? totalProfit / n : 0;
+    const winning = s.filter(p => Number(p.profit) > 0).length;
+    const winRate = n > 0 ? (winning / n) * 100 : 0;
+
+    $("rPayout").textContent = payoutPct.toFixed(1) + "%";
+    $("rPayoutSub").textContent = fmtLiq(totalWon) + " / " + fmtLiq(totalBet);
+    $("rEdge").textContent = edgePct.toFixed(2) + "%";
+    $("rEdgeSub").textContent = fmtLiq(totalProfit) + " / " + fmtLiq(totalBet);
+    $("rPerRound").textContent = fmtLiq(perRound);
+    $("rPerRoundSub").textContent = fmtLiq(totalProfit) + " over " + n + " rounds";
+    $("rWinRate").textContent = winRate.toFixed(1) + "%";
+    $("rWinRateSub").textContent = winning + " / " + n + " rounds house-positive";
+  } catch (_) {}
+}
+refreshChart();
+setInterval(refreshChart, 5000);
+</script>
+</body>
+</html>
