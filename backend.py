@@ -581,6 +581,45 @@ def api_db_predictions():
     })
 
 
+OUTCOME_BUCKETS = [
+    ("1x",           1.0,  1.0001),
+    ("1x - 1.2x",    1.0,  1.2),
+    ("1.2x - 1.5x",  1.2,  1.5),
+    ("1.5x - 2x",    1.5,  2.0),
+    ("2x - 5x",      2.0,  5.0),
+    ("5x - 10x",     5.0,  10.0),
+    ("10x - up",     10.0, float("inf")),
+]
+
+
+@app.route("/api/db/outcomes")
+def api_db_outcomes():
+    """All-time probability distribution of crash points across fixed ranges.
+
+    Computed locally from recorded crash points (server seeds/liquidity are
+    not trusted). The first bucket '1x' counts exact-1x crashes; the rest are
+    half-open ranges. Probabilities sum to 100%.
+    """
+    with _db_lock:
+        rows = _db.execute(
+            "SELECT crash_point FROM rounds WHERE crash_point IS NOT NULL"
+        ).fetchall()
+    pts = [float(r["crash_point"]) for r in rows]
+    total = len(pts)
+    buckets = []
+    for name, lo, hi in OUTCOME_BUCKETS:
+        if name == "1x":
+            cnt = sum(1 for p in pts if p >= lo and p < hi)
+        else:
+            cnt = sum(1 for p in pts if p >= lo and p < hi)
+        pct = round(100.0 * cnt / total, 2) if total else 0.0
+        buckets.append({"range": name, "count": cnt, "pct": pct})
+    return jsonify({
+        "total": total,
+        "buckets": buckets,
+    })
+
+
 @app.route("/api/events")
 def api_events():
     with lock:
