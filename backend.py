@@ -40,7 +40,7 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, make_response, render_template, Response
+from flask import Flask, jsonify, make_response, render_template, request, Response
 from playwright.sync_api import sync_playwright
 
 logging.basicConfig(
@@ -307,7 +307,7 @@ def browser_collector_loop():
                 page = ctx.new_page()
 
                 def on_event(ev_type, payload_json):
-                    global last_msg_ts
+                    global last_msg_ts, connected
                     last_msg_ts = time.time()
                     if ev_type in ("socketOpen", "socketClose", "socketError"):
                         connected = (ev_type == "socketOpen")
@@ -400,6 +400,11 @@ def db_count():
     return row["c"] if row else 0
 
 
+@app.route("/api/db/count")
+def api_db_count():
+    return jsonify({"count": db_count()})
+
+
 @app.route("/api/db/aggregates")
 def api_db_aggregates():
     """Cumulative, server-independent analytics for the live chart.
@@ -455,11 +460,20 @@ def api_db_aggregates():
 
 @app.route("/api/db/rounds")
 def api_db_rounds():
-    """Last 20 rounds from the database (most recent first)."""
+    """Rounds from the database (most recent first). Optional ?limit=N (0=all)."""
+    try:
+        limit = int(request.args.get("limit", 20))
+    except Exception:
+        limit = 20
     with _db_lock:
-        rows = _db.execute(
-            "SELECT * FROM rounds ORDER BY crashed_at DESC LIMIT 20"
-        ).fetchall()
+        if limit and limit > 0:
+            rows = _db.execute(
+                "SELECT * FROM rounds ORDER BY crashed_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        else:
+            rows = _db.execute(
+                "SELECT * FROM rounds ORDER BY crashed_at DESC"
+            ).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -486,6 +500,85 @@ def api_db_rounds_all():
             d["cashouts"] = []
         out.append(d)
     return jsonify(out)
+
+
+@app.route("/api/db/predictions")
+def api_db_predictions():
+    """Guess the next crash multiplier and report guess accuracy.
+
+    Heuristic (transparent, data-driven, not trusting server seeds):
+      - Take the most recent N crash points (default 30).
+      - predicted_next = median of recent crashes, blended 50/50 with the
+        mean. This is a simple, defensible baseline ("the next crash looks
+        like recent crashes").
+      - Back-test: for each round i (after the first window), predict from the
+        preceding window and compare to the actual crash point, producing
+        accuracy stats (avg absolute error, % within 1x / 2x).
+    """
+    try:
+        N = int(request.args.get("window", 30))
+    except Exception:
+        N = 30
+    if N < 3:
+        N = 3
+
+    with _db_lock:
+        rows = _db.execute(
+            "SELECT round_id, crash_point FROM rounds "
+            "WHERE crash_point IS NOT NULL ORDER BY crashed_at ASC"
+        ).fetchall()
+
+    pts = [(r["round_id"], float(r["crash_point"])) for r in rows]
+    if len(pts) < N + 1:
+        return jsonify({
+            "window": N,
+            "samples": len(pts),
+            "predicted_next": None,
+            "method": "need at least %d rounds" % (N + 1),
+            "accuracy": None,
+            "series": [],
+        })
+
+    recent = [p for _, p in pts[-N:]]
+    median = sorted(recent)[len(recent) // 2]
+    mean = sum(recent) / len(recent)
+    predicted_next = round((median + mean) / 2, 2)
+
+    # Back-test: predict round i using the N points before it.
+    preds = []
+    errs = []
+    for i in range(N, len(pts)):
+        window = [p for _, p in pts[i - N:i]]
+        m = sorted(window)[len(window) // 2]
+        avg = sum(window) / len(window)
+        guess = (m + avg) / 2
+        actual = pts[i][1]
+        err = abs(guess - actual)
+        errs.append(err)
+        preds.append({
+            "round_id": pts[i][0],
+            "guess": round(guess, 2),
+            "actual": round(actual, 2),
+            "error": round(err, 2),
+        })
+
+    avg_err = round(sum(errs) / len(errs), 3)
+    acc1 = round(100.0 * sum(1 for e in errs if e <= 1.0) / len(errs), 1)
+    acc2 = round(100.0 * sum(1 for e in errs if e <= 2.0) / len(errs), 1)
+
+    return jsonify({
+        "window": N,
+        "samples": len(pts),
+        "predicted_next": predicted_next,
+        "method": "median+mean of last %d crashes" % N,
+        "accuracy": {
+            "guesses": len(preds),
+            "avg_error": avg_err,
+            "within_1x": acc1,
+            "within_2x": acc2,
+        },
+        "series": preds,
+    })
 
 
 @app.route("/api/events")
