@@ -566,10 +566,23 @@ def api_db_predictions():
     acc1 = round(100.0 * sum(1 for e in errs if e <= 1.0) / len(errs), 1)
     acc2 = round(100.0 * sum(1 for e in errs if e <= 2.0) / len(errs), 1)
 
+    # RTP derived from observed house edge (WebSocket reports houseEdge per
+    # round; insider-confirmed at 1% => RTP 0.99). Fallback to 0.99.
+    with _db_lock:
+        he = _db.execute(
+            "SELECT AVG(house_edge) AS h FROM rounds WHERE house_edge IS NOT NULL"
+        ).fetchone()
+    obs_edge = float(he["h"]) if he and he["h"] is not None else 0.01
+    if not (0 < obs_edge < 1):
+        obs_edge = 0.01
+    rtp = round(1.0 - obs_edge, 4)
+
     return jsonify({
         "window": N,
         "samples": len(pts),
         "predicted_next": predicted_next,
+        "rtp": rtp,
+        "house_edge": round(obs_edge, 4),
         "method": "median+mean of last %d crashes" % N,
         "accuracy": {
             "guesses": len(preds),

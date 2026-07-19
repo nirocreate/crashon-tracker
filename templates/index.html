@@ -35,6 +35,12 @@
   .note { color:var(--muted); font-size:11px; margin-top:8px; }
   .pred-stats { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:12px; }
   .pred-stats b { color:var(--text); }
+  .surv { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-top:10px; }
+  @media(max-width:820px){ .surv { grid-template-columns:repeat(2,1fr); } }
+  .scell { background:#0d1426; border:1px solid #1e2a44; border-radius:8px; padding:8px 6px; text-align:center; }
+  .scell .sr { font-size:12px; color:var(--muted); }
+  .scell .sp { font-size:20px; font-weight:700; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .scell .sc { font-size:10px; color:var(--muted); margin-top:2px; }
   .hcell { background:#0d1426; border:1px solid #1e2a44; border-radius:8px; padding:10px 6px; text-align:center; }
   .hcell .hr { font-size:12px; color:var(--muted); margin-bottom:6px; }
   .hcell .hp { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; }
@@ -47,6 +53,12 @@
   .rsub { color:var(--muted); font-size:11px; margin-top:4px; }
   .summary { display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--muted); margin-bottom:10px; }
   .summary b { color:var(--text); }
+  .ev-wrap { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px; }
+  @media(max-width:820px){ .ev-wrap { grid-template-columns:1fr; } }
+  .ev-row { background:#0d1426; border:1px solid #1e2a44; border-radius:8px; padding:10px 12px; }
+  .ev-row label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .ev-row input { background:#0a0e1a; border:1px solid #1e2a44; border-radius:6px; color:var(--text); padding:6px 8px; width:100%; font-size:14px; }
+  .ev-row .big { font-size:28px; }
 </style>
 </head>
 <body>
@@ -73,12 +85,45 @@
     <h2>Next Crash Prediction</h2>
     <div id="predVal" class="big">--</div>
     <div class="phase">expected multiplier of the next crash</div>
-    <div class="phase">method: <b id="predMethod">recent median</b></div>
+    <div class="phase">expected multiplier of the next crash (median+mean of last 30)</div>
+    <div class="phase" style="margin-top:8px;">Probability of reaching a multiplier &mdash; survival function P(crash &ge; M) = RTP / M</div>
+    <div class="surv">
+      <div class="scell"><div class="sr">1.5x</div><div class="sp" id="surv15">--</div><div class="sc" id="sc15">crash &lt; --</div></div>
+      <div class="scell"><div class="sr">2x</div><div class="sp" id="surv2">--</div><div class="sc" id="sc2">crash &lt; --</div></div>
+      <div class="scell"><div class="sr">5x</div><div class="sp" id="surv5">--</div><div class="sc" id="sc5">crash &lt; --</div></div>
+      <div class="scell"><div class="sr">10x</div><div class="sp" id="surv10">--</div><div class="sc" id="sc10">crash &lt; --</div></div>
+      <div class="scell"><div class="sr">100x</div><div class="sp" id="surv100">--</div><div class="sc" id="sc100">crash &lt; --</div></div>
+    </div>
+    <div class="phase" style="margin-top:8px;">RTP used: <b id="survRtp">--</b> (1% house edge, confirmed from WebSocket houseEdge)</div>
     <div class="pred-stats">
       <span>guesses: <b id="predTotal">0</b></span>
       <span>avg error: <b id="predAvgErr">0</b>x</span>
       <span>within 1x: <b id="predAcc1">0%</b></span>
       <span>within 2x: <b id="predAcc2">0%</b></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Expected Value (EV) per Bet</h2>
+    <div class="ev-wrap">
+      <div class="ev-row">
+        <label>Bet size ($)</label>
+        <input type="number" id="evBet" value="1" min="0.01" step="0.01" />
+      </div>
+      <div class="ev-row">
+        <label>Cashout target (M)</label>
+        <input type="number" id="evTarget" value="2" min="1.01" step="0.01" />
+      </div>
+      <div class="ev-row">
+        <label>EV per round</label>
+        <span id="evResult" class="big">--</span>
+      </div>
+    </div>
+    <div class="phase" style="margin-top:8px;">
+      EV = B &times; (RTP &minus; 1) = [P(win) &times; (M &times; B &minus; B)] + [P(lose) &times; (&minus;B)]
+    </div>
+    <div class="phase">
+      For 99% RTP, a $1 bet loses <b id="evPerDollar">&minus;$0.03</b> per round on average, regardless of your cashout target.
     </div>
   </div>
 
@@ -378,6 +423,36 @@ async function refreshPrediction() {
       $("predAcc1").textContent = acc.within_1x + "%";
       $("predAcc2").textContent = acc.within_2x + "%";
     }
+
+    const rtp = p.rtp != null ? p.rtp : 0.99;
+    $("survRtp").textContent = rtp;
+
+    const mults = [
+      { m: 1.5, pid: "surv15", sid: "sc15" },
+      { m: 2,   pid: "surv2",  sid: "sc2" },
+      { m: 5,   pid: "surv5",  sid: "sc5" },
+      { m: 10,  pid: "surv10", sid: "sc10" },
+      { m: 100, pid: "surv100",sid: "sc100" }
+    ];
+
+    mults.forEach(({ m, pid, sid }) => {
+      const reach = rtp / m;
+      const crashBefore = 1 - reach;
+      $(pid).textContent = (reach * 100).toFixed(1) + "%";
+      $(sid).textContent = "crash < " + (crashBefore * 100).toFixed(1) + "%";
+    });
+
+    let evRtp = rtp;
+    function calcEv() {
+      const bet = parseFloat($("evBet").value) || 0;
+      const target = parseFloat($("evTarget").value) || 1;
+      const ev = bet * (evRtp - 1);
+      $("evResult").textContent = "$" + ev.toFixed(2);
+      $("evPerDollar").textContent = "$" + ev.toFixed(2);
+    }
+    calcEv();
+    $("evBet").addEventListener("input", calcEv);
+    $("evTarget").addEventListener("input", calcEv);
 
     const s = p.series || [];
     const labels = s.map(x => x.round_id.replace("CR-", ""));
